@@ -52,6 +52,10 @@ function currentMinute(): Date {
   return now
 }
 
+function clockMinute(value: number): number {
+  return Math.floor(value / 60_000) * 60_000
+}
+
 function dayRange(date: string): [number, number] {
   const nextDate = format(addDays(parseISO(date), 1), 'yyyy-MM-dd')
   return [
@@ -72,7 +76,9 @@ function eventDate(event: LogEvent): string {
 }
 
 function entryDuration(entry: Entry, now: number): number {
-  return Math.max(0, (entry.endAt ? Date.parse(entry.endAt) : now) - Date.parse(entry.startAt))
+  const start = clockMinute(Date.parse(entry.startAt))
+  const end = entry.endAt ? clockMinute(Date.parse(entry.endAt)) : clockMinute(now)
+  return Math.max(0, end - start)
 }
 
 function mergedDuration(intervals: [number, number][]): number {
@@ -98,7 +104,7 @@ function formatDay(date: string): string {
 function App() {
   const [records, setRecords] = useState<LogRecord[]>([])
   const [selectedDate, setSelectedDate] = useState(() => dateInIndia(new Date()))
-  const [now, setNow] = useState(Date.now())
+  const [now, setNow] = useState(() => currentMinute().getTime())
   const [editorEntry, setEditorEntry] = useState<Entry | null | undefined>(undefined)
   const [storageStatus, setStorageStatus] = useState('Checking…')
   const [error, setError] = useState('')
@@ -111,7 +117,22 @@ function App() {
 
   useEffect(() => {
     void reload().catch((cause: unknown) => setError(`Could not load saved data: ${String(cause)}`))
-    const timer = window.setInterval(() => setNow(Date.now()), 15_000)
+    let timer: number
+    const refreshAtNextMinute = () => {
+      setNow(currentMinute().getTime())
+      timer = window.setTimeout(
+        refreshAtNextMinute,
+        60_000 - (Date.now() % 60_000),
+      )
+    }
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') {
+        window.clearTimeout(timer)
+        refreshAtNextMinute()
+      }
+    }
+    refreshAtNextMinute()
+    document.addEventListener('visibilitychange', refreshWhenVisible)
     void navigator.storage?.persist?.().then((granted) => {
       setStorageStatus(granted ? 'Persistent storage enabled' : 'Storage may be cleared by your browser')
     }).catch((cause: unknown) => {
@@ -119,15 +140,18 @@ function App() {
       setError(`Could not request persistent storage: ${String(cause)}`)
     })
     if (!navigator.storage?.persist) setStorageStatus('Persistent storage unavailable')
-    return () => window.clearInterval(timer)
+    return () => {
+      window.clearTimeout(timer)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
+    }
   }, [])
 
   const [dayStart, dayEnd] = dayRange(selectedDate)
   const dayRecords = useMemo(() => records.filter((record) => {
     if (record.deleted) return false
     if (record.kind === 'event') return eventDate(record) === selectedDate
-    const start = Date.parse(record.startAt)
-    const end = record.endAt ? Date.parse(record.endAt) : now
+    const start = clockMinute(Date.parse(record.startAt))
+    const end = record.endAt ? clockMinute(Date.parse(record.endAt)) : clockMinute(now)
     return start < dayEnd && end > dayStart
   }), [records, selectedDate, dayStart, dayEnd, now])
 
@@ -140,8 +164,8 @@ function App() {
   })
 
   const intervals = entries.map((entry): [number, number] => [
-    Math.max(dayStart, Date.parse(entry.startAt)),
-    Math.min(dayEnd, entry.endAt ? Date.parse(entry.endAt) : now),
+    Math.max(dayStart, clockMinute(Date.parse(entry.startAt))),
+    Math.min(dayEnd, entry.endAt ? clockMinute(Date.parse(entry.endAt)) : clockMinute(now)),
   ]).filter(([start, end]) => end > start)
   const totalTime = mergedDuration(intervals)
   const restTime = (['Break', 'Washroom', 'Lunch'] as const).map((type) => ({
@@ -149,8 +173,8 @@ function App() {
     duration: mergedDuration(entries
       .filter((entry) => entry.type === type)
       .map((entry): [number, number] => {
-        const start = Math.max(dayStart, Date.parse(entry.startAt))
-        const end = Math.min(dayEnd, entry.endAt ? Date.parse(entry.endAt) : now)
+        const start = Math.max(dayStart, clockMinute(Date.parse(entry.startAt)))
+        const end = Math.min(dayEnd, entry.endAt ? clockMinute(Date.parse(entry.endAt)) : clockMinute(now))
         return [start, end]
       })
       .filter(([start, end]) => end > start)),
@@ -226,7 +250,7 @@ function App() {
   }
 
   async function handleSaveEntry(data: Omit<Entry, 'id' | 'kind' | 'createdAt' | 'updatedAt' | 'deleted'>, previous?: Entry) {
-    const stamp = new Date().toISOString()
+    const stamp = currentMinute().toISOString()
     const entry: Entry = {
       ...data,
       id: previous?.id ?? newId(),
