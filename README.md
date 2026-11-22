@@ -22,3 +22,6 @@ Open the local URL Wrangler prints. The app and `/api` functions share the same 
 7. Open the deployed app, enter the same `SYNC_TOKEN` in **Settings**, save it, and use **Test connection**.
 
 The browser stores the sync token on that device only. Removing browser storage or using another device requires entering the token again.
+
+
+
