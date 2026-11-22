@@ -81,6 +81,20 @@ function entryDuration(entry: Entry, now: number): number {
   return Math.max(0, end - start)
 }
 
+function entryDurationLabel(entry: Entry, now: number): string {
+  const duration = entryDuration(entry, now)
+  if (duration > 0) return durationLabel(duration)
+  const start = clockMinute(Date.parse(entry.startAt))
+  const end = entry.endAt ? clockMinute(Date.parse(entry.endAt)) : clockMinute(now)
+  return start === end ? '<1m' : durationLabel(duration)
+}
+
+function exactDurationSeconds(entry: Entry, now: number): number | undefined {
+  if (entry.startedAtExact === undefined) return undefined
+  const end = entry.endedAtExact ?? (entry.endAt === null ? now : undefined)
+  return end === undefined ? undefined : Math.floor(Math.max(0, end - entry.startedAtExact) / 1000)
+}
+
 function mergedDuration(intervals: [number, number][]): number {
   if (!intervals.length) return 0
   intervals.sort((a, b) => a[0] - b[0])
@@ -200,7 +214,9 @@ function App() {
   }
 
   function startEntry(type: EntryType) {
-    const stamp = currentMinute()
+    const startedAtExact = Date.now()
+    const stamp = new Date(startedAtExact)
+    stamp.setSeconds(0, 0)
     const iso = stamp.toISOString()
     void persist({
       id: newId(),
@@ -211,6 +227,7 @@ function App() {
       type,
       withWho: '',
       forWhat: '',
+      startedAtExact,
       createdAt: iso,
       updatedAt: iso,
       deleted: false,
@@ -232,15 +249,20 @@ function App() {
   }
 
   function stopEntry(entry: Entry) {
-    const stamp = currentMinute()
-    void persist({ ...entry, endAt: stamp.toISOString(), updatedAt: stamp.toISOString() }, `${entry.type} stopped`)
+    const endedAtExact = Date.now()
+    const stamp = new Date(endedAtExact)
+    stamp.setSeconds(0, 0)
+    void persist({ ...entry, endAt: stamp.toISOString(), endedAtExact, updatedAt: stamp.toISOString() }, `${entry.type} stopped`)
   }
 
   function stopAll() {
     const running = entries.filter((entry) => entry.endAt === null)
     if (!running.length) return
-    const iso = currentMinute().toISOString()
-    void Promise.all(running.map((entry) => saveRecord({ ...entry, endAt: iso, updatedAt: iso })))
+    const endedAtExact = Date.now()
+    const stamp = new Date(endedAtExact)
+    stamp.setSeconds(0, 0)
+    const iso = stamp.toISOString()
+    void Promise.all(running.map((entry) => saveRecord({ ...entry, endAt: iso, endedAtExact, updatedAt: iso })))
       .then(reload)
       .then(() => {
         setError('')
@@ -276,10 +298,21 @@ function App() {
 
   async function copyForExcel() {
     const rows = [
-      ['Date', 'Start', 'End', 'Type', 'With who', 'For what'],
+      ['Date', 'Start', 'End', 'Type', 'With who', 'For what', 'Minutes', 'Seconds'],
       ...sortedRecords.map((record) => record.kind === 'entry'
-        ? [record.date, timeInIndia(record.startAt), record.endAt ? timeInIndia(record.endAt) : 'Running', record.type, record.withWho, record.forWhat]
-        : [selectedDate, timeInIndia(record.occurredAt), '', record.type, '', '']),
+        ? [
+            record.date,
+            timeInIndia(record.startAt),
+            record.endAt ? timeInIndia(record.endAt) : 'Running',
+            record.type,
+            record.withWho,
+            record.forWhat,
+            String(Math.floor(entryDuration(record, now) / 60_000)),
+            record.startedAtExact !== undefined && record.endedAtExact !== undefined
+              ? String((record.endedAtExact - record.startedAtExact) / 1000)
+              : '',
+          ]
+        : [selectedDate, timeInIndia(record.occurredAt), '', record.type, '', '', '', '']),
     ]
     try {
       await navigator.clipboard.writeText(rows.map((row) => row.map((field) => field.replace(/[\t\r\n]/g, ' ')).join('\t')).join('\n'))
@@ -403,7 +436,7 @@ function App() {
                     <span>{timeInIndia(record.startAt)} – {record.endAt ? timeInIndia(record.endAt) : 'Running now'}</span>
                     {(record.withWho || record.forWhat) && <small>{[record.withWho, record.forWhat].filter(Boolean).join(' · ')}</small>}
                   </span>
-                  <span className="record-duration">{durationLabel(entryDuration(record, now))}</span>
+                  <span className="record-duration">{entryDurationLabel(record, now)}</span>
                 </button>
                 {!record.endAt && <button className="stop-button" onClick={() => stopEntry(record)}>Stop</button>}
               </article>
@@ -469,6 +502,7 @@ function EntryEditor({ entry, selectedDate, onClose, onSave, onDelete }: EntryEd
   const [running, setRunning] = useState(entry?.endAt === null)
   const [withWho, setWithWho] = useState(entry?.withWho ?? '')
   const [forWhat, setForWhat] = useState(entry?.forWhat ?? '')
+  const [exactTimesCleared, setExactTimesCleared] = useState(false)
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -478,7 +512,20 @@ function EntryEditor({ entry, selectedDate, onClose, onSave, onDelete }: EntryEd
       const nextDate = format(addDays(parseISO(date), 1), 'yyyy-MM-dd')
       endAt = indiaTimeToIso(nextDate, end)
     }
-    await onSave({ date, startAt, endAt, type, withWho: withWho.trim(), forWhat: forWhat.trim() }, entry)
+    await onSave({
+      date,
+      startAt,
+      endAt,
+      type,
+      withWho: withWho.trim(),
+      forWhat: forWhat.trim(),
+      ...(!exactTimesCleared && entry?.startedAtExact !== undefined
+        ? { startedAtExact: entry.startedAtExact }
+        : {}),
+      ...(!exactTimesCleared && running === (entry?.endAt === null) && entry?.endedAtExact !== undefined
+        ? { endedAtExact: entry.endedAtExact }
+        : {}),
+    }, entry)
   }
 
   return (
@@ -491,13 +538,25 @@ function EntryEditor({ entry, selectedDate, onClose, onSave, onDelete }: EntryEd
           <button className="icon-button" onClick={onClose} aria-label="Close">×</button>
         </div>
         <form onSubmit={(event) => void submit(event)}>
-          <label className="field">Date<input type="date" value={date} onChange={(event) => setDate(event.target.value)} required /></label>
+          <label className="field">Date<input type="date" value={date} onChange={(event) => {
+            setDate(event.target.value)
+            setExactTimesCleared(true)
+          }} required /></label>
           <label className="field">Type<select value={type} onChange={(event) => setType(event.target.value as EntryType)}>{ENTRY_TYPES.map((item) => <option key={item}>{item}</option>)}</select></label>
           <div className="field-row">
-            <label className="field">Start<input type="time" value={start} onChange={(event) => setStart(event.target.value)} required /></label>
-            <label className="field">End<input type="time" value={end} onChange={(event) => setEnd(event.target.value)} disabled={running} required={!running} /></label>
+            <label className="field">Start<input type="time" value={start} onChange={(event) => {
+              setStart(event.target.value)
+              setExactTimesCleared(true)
+            }} required /></label>
+            <label className="field">End<input type="time" value={end} onChange={(event) => {
+              setEnd(event.target.value)
+              setExactTimesCleared(true)
+            }} disabled={running} required={!running} /></label>
           </div>
           {entry && <label className="check-field"><input type="checkbox" checked={running} onChange={(event) => setRunning(event.target.checked)} /> Keep running</label>}
+          {entry && !exactTimesCleared && running === (entry.endAt === null) && exactDurationSeconds(entry, Date.now()) !== undefined && (
+            <p className="helper-text">Exact: {exactDurationSeconds(entry, Date.now())}s</p>
+          )}
           <label className="field">With who<input value={withWho} onChange={(event) => setWithWho(event.target.value)} placeholder="Optional" /></label>
           <label className="field">For what<input value={forWhat} onChange={(event) => setForWhat(event.target.value)} placeholder="Optional" /></label>
           <div className="modal-actions">
