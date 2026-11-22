@@ -81,12 +81,11 @@ function entryDuration(entry: Entry, now: number): number {
   return Math.max(0, end - start)
 }
 
-function entryDurationLabel(entry: Entry, now: number): string {
-  const duration = entryDuration(entry, now)
-  if (duration > 0) return durationLabel(duration)
+function formatDurationForDisplay(entry: Entry, now: number): string {
   const start = clockMinute(Date.parse(entry.startAt))
   const end = entry.endAt ? clockMinute(Date.parse(entry.endAt)) : clockMinute(now)
-  return start === end ? '<1m' : durationLabel(duration)
+  if (start === end) return '<1m'
+  return durationLabel(Math.max(0, end - start))
 }
 
 function exactDurationSeconds(entry: Entry, now: number): number | undefined {
@@ -436,7 +435,7 @@ function App() {
                     <span>{timeInIndia(record.startAt)} – {record.endAt ? timeInIndia(record.endAt) : 'Running now'}</span>
                     {(record.withWho || record.forWhat) && <small>{[record.withWho, record.forWhat].filter(Boolean).join(' · ')}</small>}
                   </span>
-                  <span className="record-duration">{entryDurationLabel(record, now)}</span>
+                  <span className="record-duration">{formatDurationForDisplay(record, now)}</span>
                 </button>
                 {!record.endAt && <button className="stop-button" onClick={() => stopEntry(record)}>Stop</button>}
               </article>
@@ -554,6 +553,7 @@ function EntryEditor({ entry, selectedDate, onClose, onSave, onDelete }: EntryEd
             }} disabled={running} required={!running} /></label>
           </div>
           {entry && <label className="check-field"><input type="checkbox" checked={running} onChange={(event) => setRunning(event.target.checked)} /> Keep running</label>}
+          {entry && <p className="helper-text">Duration: {formatDurationForDisplay(entry, Date.now())}</p>}
           {entry && !exactTimesCleared && running === (entry.endAt === null) && exactDurationSeconds(entry, Date.now()) !== undefined && (
             <p className="helper-text">Exact: {exactDurationSeconds(entry, Date.now())}s</p>
           )}
