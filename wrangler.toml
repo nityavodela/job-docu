@@ -5,5 +5,5 @@ pages_build_output_dir = "./dist"
 [[d1_databases]]
 binding = "DB"
 database_name = "personal-work-log"
-database_id = "00000000-0000-0000-0000-000000000000" # Replace with the D1 database ID.
+database_id = "a0393a4b-3c1f-4989-b987-6659d301b861" # Replace with the D1 database ID.
 migrations_dir = "migrations"
