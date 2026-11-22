@@ -29,6 +29,8 @@ export interface Entry extends BaseRecord {
   type: EntryType
   withWho: string
   forWhat: string
+  startedAtExact?: number
+  endedAtExact?: number
 }
 
 export interface LogEvent extends BaseRecord {
@@ -105,7 +107,9 @@ function isRecord(value: unknown): value is LogRecord {
       (entry.endAt === null || typeof entry.endAt === 'string') &&
       ENTRY_TYPES.includes(entry.type as EntryType) &&
       typeof entry.withWho === 'string' &&
-      typeof entry.forWhat === 'string'
+      typeof entry.forWhat === 'string' &&
+      (entry.startedAtExact === undefined || (typeof entry.startedAtExact === 'number' && Number.isFinite(entry.startedAtExact))) &&
+      (entry.endedAtExact === undefined || (typeof entry.endedAtExact === 'number' && Number.isFinite(entry.endedAtExact)))
     )
   }
 
