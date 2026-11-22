@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { liveQuery } from 'dexie'
 import { addDays, format, parseISO } from 'date-fns'
 import {
   ENTRY_TYPES,
@@ -124,7 +125,8 @@ function formatDay(date: string): string {
 }
 
 function App() {
-  const [records, setRecords] = useState<LogRecord[]>([])
+  const [records, setRecords] = useState<LogRecord[] | null>(null)
+  const [loadFailed, setLoadFailed] = useState(false)
   const [selectedDate, setSelectedDate] = useState(() => dateInIndia(new Date()))
   const [now, setNow] = useState(() => currentMinute().getTime())
   const [editorEntry, setEditorEntry] = useState<Entry | null | undefined>(undefined)
@@ -133,18 +135,27 @@ function App() {
   const [notice, setNotice] = useState('')
   const [darkMode, setDarkMode] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [actionPanel, setActionPanel] = useState<'start' | 'events' | null>(null)
+  const [startType, setStartType] = useState<EntryType>('Work')
+  const [startWithWho, setStartWithWho] = useState('')
+  const [startForWhat, setStartForWhat] = useState('')
   const [syncSnapshot, setSyncSnapshot] = useState<SyncSnapshot>({
     state: 'not-configured',
     pendingCount: 0,
     hasLongPending: false,
   })
 
-  async function reload() {
-    setRecords(await getRecords())
-  }
-
   useEffect(() => {
-    void reload().catch((cause: unknown) => setError(`Could not load saved data: ${String(cause)}`))
+    const subscription = liveQuery(() => getRecords()).subscribe({
+      next: (loadedRecords) => {
+        setRecords(loadedRecords)
+        setLoadFailed(false)
+      },
+      error: (cause: unknown) => {
+        setLoadFailed(true)
+        setError(`Could not load saved data: ${String(cause)}`)
+      },
+    })
     let timer: number
     const refreshAtNextMinute = () => {
       setNow(currentMinute().getTime())
@@ -171,6 +182,7 @@ function App() {
     return () => {
       window.clearTimeout(timer)
       document.removeEventListener('visibilitychange', refreshWhenVisible)
+      subscription.unsubscribe()
     }
   }, [])
 
@@ -184,21 +196,33 @@ function App() {
   }, [])
 
   const [dayStart, dayEnd] = dayRange(selectedDate)
-  const dayRecords = useMemo(() => records.filter((record) => {
+  const loadedRecords = records ?? []
+  const dayRecords = useMemo(() => loadedRecords.filter((record) => {
     if (record.deleted) return false
     if (record.kind === 'event') return eventDate(record) === selectedDate
     const start = clockMinute(Date.parse(record.startAt))
     const end = record.endAt ? clockMinute(Date.parse(record.endAt)) : clockMinute(now)
     return start < dayEnd && end > dayStart
-  }), [records, selectedDate, dayStart, dayEnd, now])
+  }), [loadedRecords, selectedDate, dayStart, dayEnd, now])
 
   const entries = dayRecords.filter((record): record is Entry => record.kind === 'entry')
   const events = dayRecords.filter((record): record is LogEvent => record.kind === 'event')
-  const sortedRecords = [...dayRecords].sort((a, b) => {
+  const createdAtExact = (record: LogRecord) => {
+    if (record.createdAtExact !== undefined) return record.createdAtExact
+    const exactStart = record.kind === 'entry' ? record.startedAtExact : undefined
+    const updatedAt = Date.parse(record.updatedAt)
+    return exactStart ?? (Number.isFinite(updatedAt) ? updatedAt : 0)
+  }
+  const sortedRecords = [...dayRecords].sort((a, b) =>
+    createdAtExact(b) - createdAtExact(a) || b.id.localeCompare(a.id),
+  )
+  const timeOrderedRecords = [...dayRecords].sort((a, b) => {
     const aTime = a.kind === 'entry' ? a.startAt : a.occurredAt
     const bTime = b.kind === 'entry' ? b.startAt : b.occurredAt
-    return Date.parse(bTime) - Date.parse(aTime)
+    return Date.parse(bTime) - Date.parse(aTime) || b.id.localeCompare(a.id)
   })
+  const runningEntries = sortedRecords.filter((record): record is Entry => record.kind === 'entry' && record.endAt === null)
+  const dailyListRecords = sortedRecords.filter((record) => record.kind !== 'entry' || record.endAt !== null)
 
   const intervals = entries.map((entry): [number, number] => [
     Math.max(dayStart, clockMinute(Date.parse(entry.startAt))),
@@ -228,7 +252,6 @@ function App() {
     try {
       await saveRecord(record)
       localWriteCompleted()
-      await reload()
       setError('')
       setNotice(message)
       if (message) window.setTimeout(() => setNotice(''), 2500)
@@ -237,7 +260,7 @@ function App() {
     }
   }
 
-  function startEntry(type: EntryType) {
+  function startEntry(type: EntryType, details = { withWho: '', forWhat: '' }) {
     const startedAtExact = Date.now()
     const stamp = new Date(startedAtExact)
     stamp.setSeconds(0, 0)
@@ -245,12 +268,13 @@ function App() {
     void persist({
       id: newId(),
       kind: 'entry',
+      createdAtExact: startedAtExact,
       date: dateInIndia(stamp),
       startAt: iso,
       endAt: null,
       type,
-      withWho: '',
-      forWhat: '',
+      withWho: details.withWho,
+      forWhat: details.forWhat,
       startedAtExact,
       createdAt: iso,
       updatedAt: iso,
@@ -259,10 +283,14 @@ function App() {
   }
 
   function addEvent(type: EventType) {
-    const iso = currentMinute().toISOString()
+    const createdAtExact = Date.now()
+    const stamp = new Date(createdAtExact)
+    stamp.setSeconds(0, 0)
+    const iso = stamp.toISOString()
     const event: LogEvent = {
       id: newId(),
       kind: 'event',
+      createdAtExact,
       occurredAt: iso,
       type,
       createdAt: iso,
@@ -270,6 +298,7 @@ function App() {
       deleted: false,
     }
     void persist(event, `${type} logged`)
+    setActionPanel(null)
   }
 
   function stopEntry(entry: Entry) {
@@ -280,14 +309,13 @@ function App() {
   }
 
   function stopAll() {
-    const running = entries.filter((entry) => entry.endAt === null)
+    const running = runningEntries
     if (!running.length) return
     const endedAtExact = Date.now()
     const stamp = new Date(endedAtExact)
     stamp.setSeconds(0, 0)
     const iso = stamp.toISOString()
     void Promise.all(running.map((entry) => saveRecord({ ...entry, endAt: iso, endedAtExact, updatedAt: iso })))
-      .then(reload)
       .then(() => {
         localWriteCompleted()
         setError('')
@@ -298,10 +326,16 @@ function App() {
 
   async function handleSaveEntry(data: Omit<Entry, 'id' | 'kind' | 'createdAt' | 'updatedAt' | 'deleted'>, previous?: Entry) {
     const stamp = currentMinute().toISOString()
+    const previousCreatedAtExact = previous?.createdAtExact
+      ?? previous?.startedAtExact
+      ?? (previous ? Date.parse(previous.updatedAt) : undefined)
     const entry: Entry = {
       ...data,
       id: previous?.id ?? newId(),
       kind: 'entry',
+      createdAtExact: previous
+        ? (Number.isFinite(previousCreatedAtExact) ? previousCreatedAtExact : Date.now())
+        : Date.now(),
       createdAt: previous?.createdAt ?? stamp,
       updatedAt: stamp,
       deleted: false,
@@ -314,7 +348,6 @@ function App() {
     try {
       await softDeleteRecord(entry)
       localWriteCompleted()
-      await reload()
       setEditorEntry(undefined)
       setError('')
     } catch (cause) {
@@ -325,7 +358,7 @@ function App() {
   async function copyForExcel() {
     const rows = [
       ['Date', 'Start', 'End', 'Type', 'With who', 'For what', 'Minutes', 'Seconds'],
-      ...sortedRecords.map((record) => record.kind === 'entry'
+      ...timeOrderedRecords.map((record) => record.kind === 'entry'
         ? [
             record.date,
             timeInIndia(record.startAt),
@@ -370,7 +403,6 @@ function App() {
     try {
       const added = await restoreBackup(await file.text())
       localWriteCompleted()
-      await reload()
       setError('')
       setNotice(`Restore complete: ${added} new ${added === 1 ? 'record' : 'records'} added`)
       window.setTimeout(() => setNotice(''), 3500)
@@ -381,6 +413,14 @@ function App() {
 
   function moveDay(amount: number) {
     setSelectedDate(format(addDays(parseISO(selectedDate), amount), 'yyyy-MM-dd'))
+  }
+
+  function startSelectedEntry(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    startEntry(startType, { withWho: startWithWho.trim(), forWhat: startForWhat.trim() })
+    setStartWithWho('')
+    setStartForWhat('')
+    setActionPanel(null)
   }
 
   return (
@@ -404,8 +444,28 @@ function App() {
         <button className="icon-button" onClick={() => moveDay(1)} aria-label="Next day">›</button>
       </section>
 
+      {runningEntries.length > 0 && (
+        <section className="running-section" aria-label="Running entries">
+          <div className="running-heading">
+            <h2>Running · {runningEntries.length}</h2>
+            <button className="stop-all" onClick={stopAll}>Stop all</button>
+          </div>
+          <div className="record-list">
+            {runningEntries.map((entry) => (
+              <EntryListRow
+                key={entry.id}
+                entry={entry}
+                now={now}
+                onEdit={() => setEditorEntry(entry)}
+                onStop={() => stopEntry(entry)}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
       <section className="totals-card">
-        <div className="total-main">
+        <div className="total-line">
           <span>Total logged</span>
           <strong>{durationLabel(totalTime)}</strong>
           <small>Overlapping time counted once</small>
@@ -423,50 +483,26 @@ function App() {
         </p>
       </section>
 
-      <section className="actions-section">
-        <div className="section-heading">
-          <div><p className="eyebrow">TRACK TIME</p><h2>Start an entry</h2></div>
-          <button className="stop-all" onClick={stopAll} disabled={!entries.some((entry) => !entry.endAt)}>Stop all</button>
-        </div>
-        <div className="start-grid">
-          {ENTRY_TYPES.map((type) => (
-            <button key={type} className={`start-button type-${type.toLowerCase()}`} onClick={() => startEntry(type)}>
-              <span className="start-dot" />{type}
-            </button>
-          ))}
-        </div>
-        <p className="helper-text">Each start is independent; entries can overlap.</p>
-      </section>
-
-      <section className="actions-section">
-        <div className="section-heading"><div><p className="eyebrow">QUICK LOG</p><h2>One-tap events</h2></div></div>
-        <div className="event-grid">
-          {EVENT_TYPES.map((type) => <button key={type} className="event-button" onClick={() => addEvent(type)}>{type}</button>)}
-        </div>
-      </section>
-
       <section className="log-section">
         <div className="section-heading">
           <div><p className="eyebrow">{dayRecords.length} RECORD{dayRecords.length === 1 ? '' : 'S'}</p><h2>Daily log</h2></div>
           <button className="text-button" onClick={() => setEditorEntry(null)}>＋ Add past entry</button>
         </div>
-        {sortedRecords.length === 0 ? (
+        {records === null ? (
+          <div className="loading-state" role="status">{loadFailed ? 'Saved entries could not be loaded.' : 'Loading saved entries…'}</div>
+        ) : dailyListRecords.length === 0 && dayRecords.length === 0 ? (
           <div className="empty-state"><span>◷</span><strong>No entries yet</strong><p>Start tracking or add something you forgot.</p></div>
+        ) : dailyListRecords.length === 0 ? (
+          <p className="list-note">Running entries are shown above.</p>
         ) : (
           <div className="record-list">
-            {sortedRecords.map((record) => record.kind === 'entry' ? (
-              <article key={record.id} className={`record entry-record ${record.endAt ? '' : 'is-running'}`}>
-                <button className="record-content" onClick={() => setEditorEntry(record)}>
-                  <span className={`record-mark mark-${record.type.toLowerCase()}`} />
-                  <span className="record-info">
-                    <strong>{record.type}</strong>
-                    <span>{timeInIndia(record.startAt)} – {record.endAt ? timeInIndia(record.endAt) : 'Running now'}</span>
-                    {(record.withWho || record.forWhat) && <small>{[record.withWho, record.forWhat].filter(Boolean).join(' · ')}</small>}
-                  </span>
-                  <span className="record-duration">{formatDurationForDisplay(record, now)}</span>
-                </button>
-                {!record.endAt && <button className="stop-button" onClick={() => stopEntry(record)}>Stop</button>}
-              </article>
+            {dailyListRecords.map((record) => record.kind === 'entry' ? (
+              <EntryListRow
+                key={record.id}
+                entry={record}
+                now={now}
+                onEdit={() => setEditorEntry(record)}
+              />
             ) : (
               <article key={record.id} className="record event-record">
                 <span className="event-mark">•</span><strong>{record.type}</strong><time>{timeInIndia(record.occurredAt)}</time>
@@ -517,7 +553,72 @@ function App() {
           onDelete={handleDeleteEntry}
         />
       )}
+
+      {actionPanel && (
+        <section className={`compact-action-panel ${actionPanel === 'events' ? 'events-panel' : ''}`} aria-label={actionPanel === 'start' ? 'Start an entry' : 'Log an event'}>
+          <div className="panel-heading">
+            <strong>{actionPanel === 'start' ? 'Start an entry' : 'Log an event'}</strong>
+            <button className="icon-button panel-close" onClick={() => setActionPanel(null)} aria-label="Close action panel">×</button>
+          </div>
+          {actionPanel === 'start' ? (
+            <form className="start-panel-form" onSubmit={startSelectedEntry}>
+              <div className="type-chips" aria-label="Entry type">
+                {ENTRY_TYPES.map((type) => (
+                  <button
+                    key={type}
+                    type="button"
+                    className={`type-chip ${startType === type ? 'is-selected' : ''}`}
+                    aria-pressed={startType === type}
+                    onClick={() => setStartType(type)}
+                  >{type}</button>
+                ))}
+              </div>
+              <div className="start-fields">
+                <label className="field">With who<input value={startWithWho} onChange={(event) => setStartWithWho(event.target.value)} /></label>
+                <label className="field">For what<input value={startForWhat} onChange={(event) => setStartForWhat(event.target.value)} /></label>
+              </div>
+              <button type="submit" className="primary-button panel-start">Start</button>
+            </form>
+          ) : (
+            <div className="event-grid">
+              {EVENT_TYPES.map((type) => (
+                <button key={type} className="event-button" onClick={() => addEvent(type)}>{type}</button>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
+      <nav className="bottom-action-bar" aria-label="Quick actions">
+        <button className="bar-action" aria-expanded={actionPanel === 'start'} onClick={() => setActionPanel((panel) => panel === 'start' ? null : 'start')}>Start</button>
+        <button className="bar-action quick-break" onClick={() => { startEntry('Break'); setActionPanel(null) }}>Break</button>
+        <button className="bar-action quick-washroom" onClick={() => { startEntry('Washroom'); setActionPanel(null) }}>Washroom</button>
+        <button className="bar-action quick-lunch" onClick={() => { startEntry('Lunch'); setActionPanel(null) }}>Lunch</button>
+        <button className="bar-action" aria-expanded={actionPanel === 'events'} onClick={() => setActionPanel((panel) => panel === 'events' ? null : 'events')}>Events</button>
+      </nav>
     </main>
+  )
+}
+
+function EntryListRow({ entry, now, onEdit, onStop }: {
+  entry: Entry
+  now: number
+  onEdit: () => void
+  onStop?: () => void
+}) {
+  return (
+    <article className={`record entry-record ${entry.endAt ? '' : 'is-running'}`}>
+      <button className="record-content" onClick={onEdit}>
+        <span className={`record-mark mark-${entry.type.toLowerCase()}`} />
+        <span className="record-info">
+          <strong>{entry.type}</strong>
+          <span>{timeInIndia(entry.startAt)} – {entry.endAt ? timeInIndia(entry.endAt) : 'Running now'}</span>
+          {(entry.withWho || entry.forWhat) && <small>{[entry.withWho, entry.forWhat].filter(Boolean).join(' · ')}</small>}
+        </span>
+        <span className="record-duration">{formatDurationForDisplay(entry, now)}</span>
+      </button>
+      {onStop && <button className="stop-button" onClick={onStop}>Stop</button>}
+    </article>
   )
 }
 

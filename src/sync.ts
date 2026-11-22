@@ -150,11 +150,12 @@ function getRemoteRecord(value: unknown): RemoteRecord {
         startAt: row.startAt,
         endAt: row.endAt,
         type: row.type,
-        withWho: row.withWho,
-        forWhat: row.forWhat,
+        withWho: typeof row.withWho === 'string' ? row.withWho : '',
+        forWhat: typeof row.forWhat === 'string' ? row.forWhat : '',
         ...(typeof row.startedAtExact === 'number' ? { startedAtExact: row.startedAtExact } : {}),
         ...(typeof row.endedAtExact === 'number' ? { endedAtExact: row.endedAtExact } : {}),
         createdAt: row.createdAt,
+        ...(typeof row.createdAtExact === 'number' ? { createdAtExact: row.createdAtExact } : {}),
         updatedAt: row.updatedAt,
         deleted: row.deleted,
       }
@@ -164,6 +165,7 @@ function getRemoteRecord(value: unknown): RemoteRecord {
         occurredAt: row.occurredAt,
         type: row.type,
         createdAt: row.createdAt,
+        ...(typeof row.createdAtExact === 'number' ? { createdAtExact: row.createdAtExact } : {}),
         updatedAt: row.updatedAt,
         deleted: row.deleted,
       }

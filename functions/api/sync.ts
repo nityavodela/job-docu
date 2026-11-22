@@ -5,9 +5,9 @@ const UPSERT_SQL = `
   INSERT INTO entries (
     id, kind, date, startAt, endAt, type, withWho, forWhat,
     startedAtExact, endedAtExact, occurredAt, createdAt, updatedAt,
-    deleted, serverUpdatedAt
+    deleted, createdAtExact, serverUpdatedAt
   ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
     MAX(?, COALESCE((SELECT MAX(serverUpdatedAt) + 1 FROM entries), ?))
   )
   ON CONFLICT(id) DO UPDATE SET
@@ -24,6 +24,7 @@ const UPSERT_SQL = `
     createdAt = excluded.createdAt,
     updatedAt = excluded.updatedAt,
     deleted = excluded.deleted,
+    createdAtExact = excluded.createdAtExact,
     serverUpdatedAt = MAX(
       excluded.serverUpdatedAt,
       COALESCE((SELECT MAX(serverUpdatedAt) + 1 FROM entries), excluded.serverUpdatedAt)
