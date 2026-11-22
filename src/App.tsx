@@ -15,6 +15,15 @@ import {
   saveRecord,
   softDeleteRecord,
 } from './db'
+import {
+  getSyncToken,
+  localWriteCompleted,
+  saveSyncToken,
+  startSyncLifecycle,
+  subscribeToSyncStatus,
+  testSyncConnection,
+  type SyncSnapshot,
+} from './sync'
 
 const TIME_ZONE = 'Asia/Kolkata'
 const dayFormatter = new Intl.DateTimeFormat('en-CA', {
@@ -123,6 +132,12 @@ function App() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [darkMode, setDarkMode] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [syncSnapshot, setSyncSnapshot] = useState<SyncSnapshot>({
+    state: 'not-configured',
+    pendingCount: 0,
+    hasLongPending: false,
+  })
 
   async function reload() {
     setRecords(await getRecords())
@@ -156,6 +171,15 @@ function App() {
     return () => {
       window.clearTimeout(timer)
       document.removeEventListener('visibilitychange', refreshWhenVisible)
+    }
+  }, [])
+
+  useEffect(() => {
+    const unsubscribe = subscribeToSyncStatus(setSyncSnapshot)
+    const stopLifecycle = startSyncLifecycle()
+    return () => {
+      unsubscribe()
+      stopLifecycle()
     }
   }, [])
 
@@ -203,6 +227,7 @@ function App() {
   async function persist(record: LogRecord, message = '') {
     try {
       await saveRecord(record)
+      localWriteCompleted()
       await reload()
       setError('')
       setNotice(message)
@@ -264,6 +289,7 @@ function App() {
     void Promise.all(running.map((entry) => saveRecord({ ...entry, endAt: iso, endedAtExact, updatedAt: iso })))
       .then(reload)
       .then(() => {
+        localWriteCompleted()
         setError('')
         setNotice(`${running.length} running ${running.length === 1 ? 'entry' : 'entries'} stopped`)
       })
@@ -287,6 +313,7 @@ function App() {
   async function handleDeleteEntry(entry: Entry) {
     try {
       await softDeleteRecord(entry)
+      localWriteCompleted()
       await reload()
       setEditorEntry(undefined)
       setError('')
@@ -342,6 +369,7 @@ function App() {
     if (!file) return
     try {
       const added = await restoreBackup(await file.text())
+      localWriteCompleted()
       await reload()
       setError('')
       setNotice(`Restore complete: ${added} new ${added === 1 ? 'record' : 'records'} added`)
@@ -462,6 +490,14 @@ function App() {
           </label>
         </div>
         <p className="storage-status"><span className="status-dot" />{storageStatus}</p>
+        <p className="sync-status" role="status">{syncStatusLabel(syncSnapshot)}</p>
+        {syncSnapshot.hasLongPending && (
+          <p className="sync-warning" role="alert">Some entries have been unsynced for more than 6 hours.</p>
+        )}
+        <button className="secondary-button settings-toggle" onClick={() => setSettingsOpen((open) => !open)}>
+          {settingsOpen ? 'Close sync settings' : 'Sync settings'}
+        </button>
+        {settingsOpen && <SyncSettings onClose={() => setSettingsOpen(false)} />}
       </section>
 
       <footer>Saved on this device · Timezone: Asia/Kolkata</footer>
@@ -482,6 +518,89 @@ function App() {
         />
       )}
     </main>
+  )
+}
+
+function syncStatusLabel(snapshot: SyncSnapshot): string {
+  switch (snapshot.state) {
+    case 'not-configured': return 'Sync not set up'
+    case 'synced': return 'Synced'
+    case 'pending': return `Pending (${snapshot.pendingCount})`
+    case 'offline': return 'Offline'
+    case 'error': return 'Sync error'
+  }
+}
+
+function SyncSettings({ onClose }: { onClose: () => void }) {
+  const [token, setToken] = useState('')
+  const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
+  const [testing, setTesting] = useState(false)
+
+  useEffect(() => {
+    try {
+      setToken(getSyncToken())
+    } catch (cause) {
+      setError(`Could not read the saved token: ${String(cause)}`)
+    }
+  }, [])
+
+  function saveToken() {
+    try {
+      saveSyncToken(token)
+      setError('')
+      setMessage(token.trim() ? 'Token saved on this device.' : 'Sync token removed.')
+    } catch (cause) {
+      setError(`Could not save the token on this device: ${String(cause)}`)
+    }
+  }
+
+  async function testConnection() {
+    setTesting(true)
+    setMessage('')
+    setError('')
+    try {
+      await testSyncConnection(token)
+      setMessage('Connection successful.')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Connection test failed.')
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose()
+    }}>
+      <section className="editor-modal sync-settings-screen" role="dialog" aria-modal="true" aria-labelledby="sync-settings-title">
+        <div className="modal-heading">
+          <div><p className="eyebrow">ON-DEVICE TOKEN</p><h2 id="sync-settings-title">Sync settings</h2></div>
+          <button className="icon-button" onClick={onClose} aria-label="Close settings">×</button>
+        </div>
+        <div className="sync-settings">
+          <label className="field">
+            Sync token
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={token}
+              onChange={(event) => setToken(event.target.value)}
+              placeholder="Stored only on this device"
+            />
+          </label>
+          <div className="sync-settings-actions">
+            <button className="secondary-button" onClick={saveToken}>Save token</button>
+            <button className="primary-button" onClick={() => void testConnection()} disabled={testing}>
+              {testing ? 'Testing…' : 'Test connection'}
+            </button>
+          </div>
+          <p className="sync-message">The token is stored in this browser on this device only.</p>
+          {message && <p className="sync-message">{message}</p>}
+          {error && <p className="sync-settings-error" role="alert">{error}</p>}
+        </div>
+      </section>
+    </div>
   )
 }
 
