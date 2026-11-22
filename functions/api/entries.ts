@@ -19,6 +19,7 @@ interface EntryRow {
   updatedAt: string
   deleted: number
   serverUpdatedAt: number
+  createdAtExact: number | null
 }
 
 export const onRequestGet: PagesFunction<Environment> = async ({ request, env }) => {
@@ -31,7 +32,7 @@ export const onRequestGet: PagesFunction<Environment> = async ({ request, env })
     const result = await env.DB.prepare(`
       SELECT id, kind, date, startAt, endAt, type, withWho, forWhat,
         startedAtExact, endedAtExact, occurredAt, createdAt, updatedAt,
-        deleted, serverUpdatedAt
+        deleted, serverUpdatedAt, createdAtExact
       FROM entries
       WHERE serverUpdatedAt > ?
       ORDER BY serverUpdatedAt ASC

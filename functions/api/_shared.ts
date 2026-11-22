@@ -63,13 +63,14 @@ function hasOnlyFields(value: Record<string, unknown>, fields: string[]): boolea
 export function validateRecord(value: unknown): LogRecord | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const record = value as Record<string, unknown>
-  const commonFields = ['id', 'kind', 'createdAt', 'updatedAt', 'deleted', 'syncStatus', 'syncPendingSince']
+  const commonFields = ['id', 'kind', 'createdAt', 'createdAtExact', 'updatedAt', 'deleted', 'syncStatus', 'syncPendingSince']
   if (
     typeof record.id !== 'string' ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(record.id) ||
     !isIsoTimestamp(record.createdAt) ||
     !isIsoTimestamp(record.updatedAt) ||
     typeof record.deleted !== 'boolean' ||
+    (record.createdAtExact !== undefined && (!Number.isSafeInteger(record.createdAtExact) || Number(record.createdAtExact) < 0)) ||
     (record.syncStatus !== undefined && record.syncStatus !== 'pending' && record.syncStatus !== 'synced') ||
     (record.syncPendingSince !== undefined && (!Number.isSafeInteger(record.syncPendingSince) || Number(record.syncPendingSince) < 0))
   ) return null
@@ -124,14 +125,15 @@ export function asDatabaseValues(record: LogRecord): unknown[] {
       record.startAt,
       record.endAt,
       record.type,
-      record.withWho,
-      record.forWhat,
+      record.withWho || null,
+      record.forWhat || null,
       record.startedAtExact ?? null,
       record.endedAtExact ?? null,
       null,
       record.createdAt,
       record.updatedAt,
       record.deleted ? 1 : 0,
+      record.createdAtExact ?? null,
     ]
   }
   return [
@@ -149,5 +151,6 @@ export function asDatabaseValues(record: LogRecord): unknown[] {
     record.createdAt,
     record.updatedAt,
     record.deleted ? 1 : 0,
+    record.createdAtExact ?? null,
   ]
 }

@@ -16,6 +16,7 @@ export type SyncStatus = 'pending' | 'synced'
 export interface BaseRecord {
   id: string
   createdAt: string
+  createdAtExact?: number
   updatedAt: string
   deleted: boolean
   syncStatus?: SyncStatus

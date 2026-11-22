@@ -34,6 +34,19 @@ class WorkLogDatabase extends Dexie {
           }
         })
       })
+    this.version(3)
+      .stores({
+        records: 'id, kind, date, startAt, occurredAt, deleted, syncStatus, syncPendingSince, updatedAt, createdAtExact',
+        syncMeta: 'key',
+      })
+      .upgrade(async (transaction) => {
+        await transaction.table('records').toCollection().modify((record: LogRecord) => {
+          if (record.createdAtExact !== undefined) return
+          const exactStart = record.kind === 'entry' ? record.startedAtExact : undefined
+          const updatedAt = Date.parse(record.updatedAt)
+          record.createdAtExact = exactStart ?? (Number.isFinite(updatedAt) ? updatedAt : Date.now())
+        })
+      })
   }
 }
 
@@ -58,6 +71,16 @@ export async function getRecords(): Promise<LogRecord[]> {
   return migrated
 }
 
+function withCreatedAtExact(record: LogRecord): LogRecord {
+  if (record.createdAtExact !== undefined) return record
+  const exactStart = record.kind === 'entry' ? record.startedAtExact : undefined
+  const updatedAt = Date.parse(record.updatedAt)
+  return {
+    ...record,
+    createdAtExact: exactStart ?? (Number.isFinite(updatedAt) ? updatedAt : Date.now()),
+  }
+}
+
 function migrateLegacyEvent(record: unknown): unknown {
   if (
     record &&
@@ -71,11 +94,19 @@ function migrateLegacyEvent(record: unknown): unknown {
 }
 
 export async function saveRecord(record: LogRecord): Promise<void> {
-  await database.records.put({
-    ...record,
-    updatedAt: new Date().toISOString(),
-    syncStatus: 'pending',
-    syncPendingSince: Date.now(),
+  await database.transaction('rw', database.records, async () => {
+    const previous = await database.records.get(record.id)
+    const createdAtExact = previous?.createdAtExact
+      ?? record.createdAtExact
+      ?? (record.kind === 'entry' ? record.startedAtExact : undefined)
+      ?? Date.parse(record.updatedAt)
+    await database.records.put({
+      ...record,
+      createdAtExact: Number.isFinite(createdAtExact) ? createdAtExact : Date.now(),
+      updatedAt: new Date().toISOString(),
+      syncStatus: 'pending',
+      syncPendingSince: Date.now(),
+    })
   })
 }
 
@@ -85,7 +116,7 @@ export async function softDeleteRecord(record: LogRecord): Promise<void> {
 
 export async function makeBackup(): Promise<string> {
   const records = await getRecords()
-  return JSON.stringify({ format: 'personal-work-log', version: 2, records }, null, 2)
+  return JSON.stringify({ format: 'personal-work-log', version: 3, records }, null, 2)
 }
 
 export function isLogRecord(value: unknown): value is LogRecord {
@@ -96,6 +127,7 @@ export function isLogRecord(value: unknown): value is LogRecord {
     typeof item.createdAt !== 'string' ||
     typeof item.updatedAt !== 'string' ||
     typeof item.deleted !== 'boolean' ||
+    (item.createdAtExact !== undefined && (typeof item.createdAtExact !== 'number' || !Number.isFinite(item.createdAtExact))) ||
     (item.syncStatus !== undefined && item.syncStatus !== 'pending' && item.syncStatus !== 'synced') ||
     (item.syncPendingSince !== undefined && (typeof item.syncPendingSince !== 'number' || !Number.isFinite(item.syncPendingSince)))
   ) return false
@@ -130,7 +162,7 @@ export async function restoreBackup(contents: string): Promise<number> {
     !backup ||
     typeof backup !== 'object' ||
     (backup as { format?: unknown }).format !== 'personal-work-log' ||
-    ![undefined, 1, 2].includes((backup as { version?: number }).version) ||
+    ![undefined, 1, 2, 3].includes((backup as { version?: number }).version) ||
     !Array.isArray((backup as { records?: unknown }).records)
   ) {
     throw new Error('This file is not a valid Work log backup.')
@@ -142,7 +174,7 @@ export async function restoreBackup(contents: string): Promise<number> {
   }
   const pendingSince = Date.now()
   const incoming = (migratedRecords as LogRecord[]).map((record) => ({
-    ...record,
+    ...withCreatedAtExact(record),
     syncStatus: 'pending' as const,
     syncPendingSince: pendingSince,
   }))
@@ -188,7 +220,8 @@ export async function markRecordsSynced(
 
 export async function mergePulledRecords(incoming: LogRecord[]): Promise<void> {
   await database.transaction('rw', database.records, async () => {
-    for (const remote of incoming) {
+    for (const rawRemote of incoming) {
+      const remote = withCreatedAtExact(rawRemote)
       const local = await database.records.get(remote.id)
       if (local?.syncStatus === 'pending') continue
       if (local?.kind === 'entry' && local.endAt === null) continue
