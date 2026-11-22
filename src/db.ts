@@ -5,7 +5,7 @@ export const EVENT_TYPES = [
   'Clock in',
   'Clock out',
   'Login: Home',
-  'Login: Office',
+  'Logout: Home',
   'System restart',
   'Connection lost',
   'Reconnected',
@@ -55,7 +55,18 @@ export function newId(): string {
 }
 
 export async function getRecords(): Promise<LogRecord[]> {
-  return database.records.toArray()
+  const records = await database.records.toArray()
+  const migrated = records.map(migrateLegacyEvent)
+  const changed = migrated.filter((record, index) => record !== records[index])
+  if (changed.length) await database.records.bulkPut(changed)
+  return migrated
+}
+
+function migrateLegacyEvent(record: LogRecord): LogRecord {
+  if (record.kind === 'event' && (record.type as string) === 'Login: Office') {
+    return { ...record, type: 'Logout: Home' }
+  }
+  return record
 }
 
 export async function saveRecord(record: LogRecord): Promise<void> {
@@ -97,7 +108,7 @@ function isRecord(value: unknown): value is LogRecord {
     const event = item as Partial<LogEvent>
     return (
       typeof event.occurredAt === 'string' &&
-      EVENT_TYPES.includes(event.type as EventType)
+      (EVENT_TYPES.includes(event.type as EventType) || (event.type as string) === 'Login: Office')
     )
   }
   return false
@@ -116,7 +127,7 @@ export async function restoreBackup(contents: string): Promise<number> {
     throw new Error('This file is not a valid Work log backup.')
   }
 
-  const incoming = (backup as { records: LogRecord[] }).records
+  const incoming = (backup as { records: LogRecord[] }).records.map(migrateLegacyEvent)
   const existingIds = new Set(await database.records.toCollection().primaryKeys())
   const newRecords = incoming.filter((record) => {
     if (existingIds.has(record.id)) return false
