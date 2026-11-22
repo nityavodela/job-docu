@@ -56,14 +56,19 @@ export function newId(): string {
 
 export async function getRecords(): Promise<LogRecord[]> {
   const records = await database.records.toArray()
-  const migrated = records.map(migrateLegacyEvent)
+  const migrated = records.map((record) => migrateLegacyEvent(record) as LogRecord)
   const changed = migrated.filter((record, index) => record !== records[index])
   if (changed.length) await database.records.bulkPut(changed)
   return migrated
 }
 
-function migrateLegacyEvent(record: LogRecord): LogRecord {
-  if (record.kind === 'event' && (record.type as string) === 'Login: Office') {
+function migrateLegacyEvent(record: unknown): unknown {
+  if (
+    record &&
+    typeof record === 'object' &&
+    (record as { kind?: unknown }).kind === 'event' &&
+    (record as { type?: string }).type === 'Login: Office'
+  ) {
     return { ...record, type: 'Logout: Home' }
   }
   return record
@@ -108,7 +113,7 @@ function isRecord(value: unknown): value is LogRecord {
     const event = item as Partial<LogEvent>
     return (
       typeof event.occurredAt === 'string' &&
-      (EVENT_TYPES.includes(event.type as EventType) || (event.type as string) === 'Login: Office')
+      EVENT_TYPES.includes(event.type as EventType)
     )
   }
   return false
@@ -121,13 +126,16 @@ export async function restoreBackup(contents: string): Promise<number> {
     typeof backup !== 'object' ||
     (backup as { format?: unknown }).format !== 'personal-work-log' ||
     (backup as { version?: unknown }).version !== 1 ||
-    !Array.isArray((backup as { records?: unknown }).records) ||
-    !(backup as { records: unknown[] }).records.every(isRecord)
+    !Array.isArray((backup as { records?: unknown }).records)
   ) {
     throw new Error('This file is not a valid Work log backup.')
   }
 
-  const incoming = (backup as { records: LogRecord[] }).records.map(migrateLegacyEvent)
+  const migratedRecords = (backup as { records: unknown[] }).records.map(migrateLegacyEvent)
+  if (!migratedRecords.every(isRecord)) {
+    throw new Error('This file is not a valid Work log backup.')
+  }
+  const incoming = migratedRecords as LogRecord[]
   const existingIds = new Set(await database.records.toCollection().primaryKeys())
   const newRecords = incoming.filter((record) => {
     if (existingIds.has(record.id)) return false
