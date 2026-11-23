@@ -94,8 +94,7 @@ export function validateRecord(value: unknown): LogRecord | null {
       (record.endAt !== null && !isIsoTimestamp(record.endAt)) ||
       typeof record.type !== 'string' ||
       !(ENTRY_TYPES as readonly string[]).includes(record.type) ||
-      typeof record.withWho !== 'string' ||
-      record.withWho.length > 500 ||
+      (record.withWho !== null && (typeof record.withWho !== 'string' || record.withWho.length > 500)) ||
       typeof record.forWhat !== 'string' ||
       record.forWhat.length > 2_000 ||
       (record.startedAtExact !== undefined && (!Number.isSafeInteger(record.startedAtExact) || Number(record.startedAtExact) < 0)) ||

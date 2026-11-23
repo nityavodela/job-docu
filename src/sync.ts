@@ -150,7 +150,7 @@ function getRemoteRecord(value: unknown): RemoteRecord {
         startAt: row.startAt,
         endAt: row.endAt,
         type: row.type,
-        withWho: typeof row.withWho === 'string' ? row.withWho : '',
+        withWho: typeof row.withWho === 'string' ? row.withWho : null,
         forWhat: typeof row.forWhat === 'string' ? row.forWhat : '',
         ...(typeof row.startedAtExact === 'number' ? { startedAtExact: row.startedAtExact } : {}),
         ...(typeof row.endedAtExact === 'number' ? { endedAtExact: row.endedAtExact } : {}),
