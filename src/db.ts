@@ -139,7 +139,7 @@ export function isLogRecord(value: unknown): value is LogRecord {
       typeof entry.startAt === 'string' &&
       (entry.endAt === null || typeof entry.endAt === 'string') &&
       ENTRY_TYPES.includes(entry.type as EntryType) &&
-      typeof entry.withWho === 'string' &&
+      (entry.withWho === null || typeof entry.withWho === 'string') &&
       typeof entry.forWhat === 'string' &&
       (entry.startedAtExact === undefined || (typeof entry.startedAtExact === 'number' && Number.isFinite(entry.startedAtExact))) &&
       (entry.endedAtExact === undefined || (typeof entry.endedAtExact === 'number' && Number.isFinite(entry.endedAtExact)))

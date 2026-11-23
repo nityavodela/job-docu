@@ -1,4 +1,12 @@
-export const ENTRY_TYPES = ['Work', 'Meeting', 'Break', 'Washroom', 'Lunch'] as const
+export const ENTRY_TYPES = [
+  'Work',
+  'Meeting',
+  'Doubts/Queries',
+  'Replies',
+  'Break',
+  'Washroom',
+  'Lunch',
+] as const
 export const EVENT_TYPES = [
   'Clock in',
   'Clock out',
@@ -29,7 +37,7 @@ export interface Entry extends BaseRecord {
   startAt: string
   endAt: string | null
   type: EntryType
-  withWho: string
+  withWho: string | null
   forWhat: string
   startedAtExact?: number
   endedAtExact?: number
