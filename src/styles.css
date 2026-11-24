@@ -249,6 +249,18 @@ footer { margin-top: 30px; color: var(--muted); font-size: 11px; text-align: cen
 .add-name-form { display: flex; flex-wrap: wrap; gap: 7px; }
 .add-name-form input { flex: 1 1 100%; min-height: 44px; padding: 0 10px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 9px; }
 .add-name-form .form-error { flex-basis: 100%; }
+.manage-names-link { justify-self: start; padding: 2px 0; color: var(--muted); background: transparent; border: 0; cursor: pointer; font-size: 12px; text-decoration: underline; }
+.settings-names { display: grid; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.settings-names h3 { margin: 0; font-size: 16px; }
+.saved-name-list { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.saved-name-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 9px; background: var(--surface-soft); border-radius: 8px; overflow-wrap: anywhere; }
+.remove-name-button { flex: 0 0 auto; width: 36px; height: 36px; color: var(--danger); background: transparent; border: 0; border-radius: 8px; cursor: pointer; font-size: 24px; }
+.settings-name-form { display: flex; flex-wrap: wrap; gap: 7px; }
+.settings-name-form input { flex: 1 1 160px; min-width: 0; min-height: 44px; padding: 0 10px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 9px; }
+.import-names-toggle { justify-self: start; }
+.name-import-list { display: grid; gap: 7px; padding: 9px; background: var(--surface-soft); border-radius: 9px; }
+.name-import-option { display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
+.name-import-option input { flex: 0 0 20px; width: 20px; height: 20px; }
 
 @media (min-width: 560px) {
   .app-shell { padding-right: 36px; padding-left: 36px; }

@@ -1,5 +1,6 @@
 import Dexie, { type EntityTable } from 'dexie'
 import { ENTRY_TYPES, EVENT_TYPES, type EntryType, type EventType, type Entry, type LogEvent, type LogRecord } from './model'
+import { addImportedNames, getLocalNames } from './names'
 
 export {
   ENTRY_TYPES,
@@ -116,7 +117,7 @@ export async function softDeleteRecord(record: LogRecord): Promise<void> {
 
 export async function makeBackup(): Promise<string> {
   const records = await getRecords()
-  return JSON.stringify({ format: 'personal-work-log', version: 3, records }, null, 2)
+  return JSON.stringify({ format: 'personal-work-log', version: 4, records, names: getLocalNames() }, null, 2)
 }
 
 export function isLogRecord(value: unknown): value is LogRecord {
@@ -162,13 +163,22 @@ export async function restoreBackup(contents: string): Promise<number> {
     !backup ||
     typeof backup !== 'object' ||
     (backup as { format?: unknown }).format !== 'personal-work-log' ||
-    ![undefined, 1, 2, 3].includes((backup as { version?: number }).version) ||
+    ![undefined, 1, 2, 3, 4].includes((backup as { version?: number }).version) ||
     !Array.isArray((backup as { records?: unknown }).records)
   ) {
     throw new Error('This file is not a valid Work log backup.')
   }
 
-  const migratedRecords = (backup as { records: unknown[] }).records.map(migrateLegacyEvent)
+  const parsedBackup = backup as { records: unknown[]; names?: unknown }
+  if (
+    parsedBackup.names !== undefined &&
+    (!Array.isArray(parsedBackup.names) || !parsedBackup.names.every((name) =>
+      typeof name === 'string' && name.trim().length > 0 && !name.includes(','),
+    ))
+  ) {
+    throw new Error('This file is not a valid Work log backup.')
+  }
+  const migratedRecords = parsedBackup.records.map(migrateLegacyEvent)
   if (!migratedRecords.every(isLogRecord)) {
     throw new Error('This file is not a valid Work log backup.')
   }
@@ -185,6 +195,7 @@ export async function restoreBackup(contents: string): Promise<number> {
     return true
   })
   if (newRecords.length) await database.records.bulkAdd(newRecords)
+  if (parsedBackup.names) addImportedNames(parsedBackup.names as string[])
   return newRecords.length
 }
 
