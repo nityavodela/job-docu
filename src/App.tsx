@@ -25,7 +25,14 @@ import {
   testSyncConnection,
   type SyncSnapshot,
 } from './sync'
-import { getLocalNames, getNameOptions, rememberName, splitNames } from './names'
+import {
+  addImportedNames,
+  getLocalNames,
+  getNamesFromEntries,
+  rememberName,
+  removeSavedName,
+  splitNames,
+} from './names'
 import { calculateDayTotals } from './totals'
 
 const TIME_ZONE = 'Asia/Kolkata'
@@ -222,10 +229,9 @@ function App() {
 
   const entries = dayRecords.filter((record): record is Entry => record.kind === 'entry')
   const events = dayRecords.filter((record): record is LogEvent => record.kind === 'event')
-  const nameOptions = useMemo(
-    () => getNameOptions(loadedRecords, localNames),
-    [loadedRecords, localNames],
-  )
+  const nameOptions = localNames
+  const importableNames = getNamesFromEntries(loadedRecords)
+    .filter((name) => !localNames.some((saved) => saved.toLocaleLowerCase() === name.toLocaleLowerCase()))
   const createdAtExact = (record: LogRecord) => {
     if (record.createdAtExact !== undefined) return record.createdAtExact
     const exactStart = record.kind === 'entry' ? record.startedAtExact : undefined
@@ -273,9 +279,21 @@ function App() {
   const dropCount = events.filter((event) => event.type === 'Connection lost').length
 
   function addLocalName(rawName: string): string {
-    const name = rememberName(rawName, nameOptions)
-    setLocalNames((current) => [...current, name])
+    const name = rememberName(rawName)
+    setLocalNames(getLocalNames())
     return name
+  }
+
+  function addNamesToDevice(rawNames: string[]): string[] {
+    const added = addImportedNames(rawNames)
+    setLocalNames(getLocalNames())
+    return added
+  }
+
+  function removeNameFromDevice(name: string): void {
+    removeSavedName(name)
+    setLocalNames(getLocalNames())
+    setStartNames((current) => current.filter((saved) => saved.toLocaleLowerCase() !== name.toLocaleLowerCase()))
   }
 
   async function persist(record: LogRecord, message = '') {
@@ -479,6 +497,7 @@ function App() {
     if (!file) return
     try {
       const added = await restoreBackup(await file.text())
+      setLocalNames(getLocalNames())
       localWriteCompleted()
       setError('')
       setNotice(`Restore complete: ${added} new ${added === 1 ? 'record' : 'records'} added`)
@@ -720,7 +739,16 @@ function App() {
         <button className="secondary-button settings-toggle" onClick={() => setSettingsOpen((open) => !open)}>
           {settingsOpen ? 'Close sync settings' : 'Sync settings'}
         </button>
-        {settingsOpen && <SyncSettings onClose={() => setSettingsOpen(false)} />}
+        {settingsOpen && (
+          <SyncSettings
+            onClose={() => setSettingsOpen(false)}
+            names={localNames}
+            importableNames={importableNames}
+            onAddName={addLocalName}
+            onAddNames={addNamesToDevice}
+            onRemoveName={removeNameFromDevice}
+          />
+        )}
       </section>}
 
       <footer>Saved on this device · Timezone: Asia/Kolkata</footer>
@@ -771,6 +799,10 @@ function App() {
               {['Meeting', 'Doubts/Queries', 'Replies'].includes(startType) && (
                 <NameSelector selected={startNames} options={nameOptions} onChange={setStartNames} onAddName={addLocalName} />
               )}
+              <button type="button" className="manage-names-link" onClick={() => {
+                setActionPanel(null)
+                setSettingsOpen(true)
+              }}>Manage names</button>
               {!['Break', 'Washroom', 'Lunch'].includes(startType) && (
                 <label className="field">For what
                   <input value={startForWhat} onChange={(event) => setStartForWhat(event.target.value)} />
@@ -847,14 +879,12 @@ function NameSelector({ selected, options, onChange, onAddName, disabled = false
       : [...selected, name])
   }
 
-  function addName(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
+  function addName() {
     try {
       const name = onAddName(draft)
       onChange([...selected, name])
       setDraft('')
       setError('')
-      setAdding(false)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not add that name.')
     }
@@ -882,12 +912,23 @@ function NameSelector({ selected, options, onChange, onAddName, disabled = false
         }}>+ Add name</button>
       </div>
       {adding && (
-        <form className="add-name-form" onSubmit={addName}>
-          <input aria-label="New name" value={draft} onChange={(event) => setDraft(event.target.value)} />
-          <button type="submit" className="secondary-button">Add</button>
-          <button type="button" className="secondary-button" onClick={() => { setAdding(false); setError('') }}>Cancel</button>
+        <div className="add-name-form">
+          <input
+            aria-label="New name"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                event.stopPropagation()
+                addName()
+              }
+            }}
+          />
+          <button type="button" className="secondary-button" onClick={addName}>Add</button>
+          <button type="button" className="secondary-button" onClick={() => { setAdding(false); setError('') }}>Close</button>
           {error && <p className="form-error" role="alert">{error}</p>}
-        </form>
+        </div>
       )}
     </div>
   )
@@ -903,11 +944,29 @@ function syncStatusLabel(snapshot: SyncSnapshot): string {
   }
 }
 
-function SyncSettings({ onClose }: { onClose: () => void }) {
+function SyncSettings({
+  onClose,
+  names,
+  importableNames,
+  onAddName,
+  onAddNames,
+  onRemoveName,
+}: {
+  onClose: () => void
+  names: string[]
+  importableNames: string[]
+  onAddName: (name: string) => string
+  onAddNames: (names: string[]) => string[]
+  onRemoveName: (name: string) => void
+}) {
   const [token, setToken] = useState('')
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const [testing, setTesting] = useState(false)
+  const [nameDraft, setNameDraft] = useState('')
+  const [nameError, setNameError] = useState('')
+  const [showImport, setShowImport] = useState(false)
+  const [selectedImports, setSelectedImports] = useState<string[]>([])
 
   useEffect(() => {
     try {
@@ -941,6 +1000,29 @@ function SyncSettings({ onClose }: { onClose: () => void }) {
     }
   }
 
+  function addName(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    try {
+      onAddName(nameDraft)
+      setNameDraft('')
+      setNameError('')
+    } catch (cause) {
+      setNameError(cause instanceof Error ? cause.message : 'Could not add that name.')
+    }
+  }
+
+  function importNames() {
+    try {
+      const added = onAddNames(selectedImports)
+      setSelectedImports([])
+      setShowImport(false)
+      setNameError('')
+      setMessage(`${added.length} name${added.length === 1 ? '' : 's'} imported.`)
+    } catch (cause) {
+      setNameError(cause instanceof Error ? cause.message : 'Could not import names.')
+    }
+  }
+
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose()
@@ -951,6 +1033,53 @@ function SyncSettings({ onClose }: { onClose: () => void }) {
           <button className="icon-button" onClick={onClose} aria-label="Close settings">×</button>
         </div>
         <div className="sync-settings">
+          <section className="settings-names" aria-labelledby="saved-names-title">
+            <h3 id="saved-names-title">Names</h3>
+            <p className="sync-message">Names are saved on this device.</p>
+            {names.length ? (
+              <ul className="saved-name-list">
+                {names.map((name) => (
+                  <li key={name.toLocaleLowerCase()}>
+                    <span>{name}</span>
+                    <button
+                      type="button"
+                      className="remove-name-button"
+                      aria-label={`Remove ${name}`}
+                      onClick={() => onRemoveName(name)}
+                    >×</button>
+                  </li>
+                ))}
+              </ul>
+            ) : <p className="sync-message">No saved names yet.</p>}
+            <form className="settings-name-form" onSubmit={addName}>
+              <input aria-label="Add a name" value={nameDraft} onChange={(event) => setNameDraft(event.target.value)} />
+              <button type="submit" className="secondary-button">Add name</button>
+            </form>
+            {nameError && <p className="form-error" role="alert">{nameError}</p>}
+            <button type="button" className="secondary-button import-names-toggle" onClick={() => {
+              setShowImport((shown) => !shown)
+              setSelectedImports([])
+            }}>Import from past entries</button>
+            {showImport && (
+              <div className="name-import-list">
+                {importableNames.length ? importableNames.map((name) => (
+                  <label key={name.toLocaleLowerCase()} className="name-import-option">
+                    <input
+                      type="checkbox"
+                      checked={selectedImports.some((selected) => selected.toLocaleLowerCase() === name.toLocaleLowerCase())}
+                      onChange={(event) => setSelectedImports((current) => event.target.checked
+                        ? [...current, name]
+                        : current.filter((selected) => selected.toLocaleLowerCase() !== name.toLocaleLowerCase()))}
+                    />
+                    {name}
+                  </label>
+                )) : <p className="sync-message">No additional names found in past entries.</p>}
+                <button type="button" className="primary-button" disabled={!selectedImports.length} onClick={importNames}>
+                  Add selected ({selectedImports.length})
+                </button>
+              </div>
+            )}
+          </section>
           <label className="field">
             Sync token
             <input
